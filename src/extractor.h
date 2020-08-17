@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>      /* for FILE */
+#include <list>
+#include "parser.h"
 #include "mercury.h"
 #include "tcp.h"
 
@@ -29,7 +31,11 @@ enum packet_data_type {
     packet_data_type_tls_sni         = 1,
     packet_data_type_http_user_agent = 2,
     packet_data_type_tls_cert        = 3,
-    packet_data_type_dtls_sni
+    packet_data_type_dtls_sni        = 4,
+    packet_data_type_dns_server      = 5,
+    packet_data_type_wireguard       = 6,
+    packet_data_type_tls_no_sni      = 7,
+    packet_data_type_http_no_user_agent = 8
 };
 
 struct packet_data {
@@ -48,7 +54,9 @@ enum fingerprint_type {
     fingerprint_type_http_server = 6,
     fingerprint_type_dhcp_client = 7,
     fingerprint_type_dtls        = 8,
-    fingerprint_type_dtls_server = 9
+    fingerprint_type_dtls_server = 9,
+    fingerprint_type_ssh         = 10,
+    fingerprint_type_ssh_kex     = 11
 };
 
 #define PROTO_UNKNOWN 65535
@@ -103,11 +111,7 @@ struct extractor {
     unsigned char *output_end;          /* end of output buffer      */
     unsigned char *last_capture;        /* last cap in output stream */
     struct packet_data packet_data;     /* data of interest in packt */
-};
-
-struct parser {
-    const unsigned char *data;          /* data being parsed/copied  */
-    const unsigned char *data_end;      /* end of data buffer        */
+    struct parser transport_data;       // NEW
 };
 
 /*
@@ -295,8 +299,11 @@ unsigned int parser_process_tls_server(struct parser *p);
 
 void extract_certificates(FILE *file, const unsigned char *data, size_t data_len);
 
-int append_extract_certificates(char *dstr, int *doff, int dlen, int *trunc,
-                                const unsigned char *data, size_t data_len);
+void write_extract_certificates(struct json_array &buf, const unsigned char *data, size_t data_len);
+
+void write_extract_cert_prefix(struct buffer_stream &buf, const unsigned char *data, size_t data_len);
+
+void write_extract_cert_full(struct json_array &a, const unsigned char *data, size_t data_len);
 
 enum status parser_read_and_skip_uint(struct parser *p,
                                       unsigned int num_bytes,
@@ -371,8 +378,11 @@ bool packet_filter_apply(struct packet_filter *pf,
 			 size_t length);
 
 size_t packet_filter_extract(struct packet_filter *pf,
+                             struct key *k,
                              uint8_t *packet,
                              size_t length);
+
+unsigned int packet_filter_process_packet(struct packet_filter *pf, struct key *k);
 
 typedef unsigned int (*parser_extractor_func)(struct parser *p, struct extractor *x);
 
@@ -410,5 +420,77 @@ unsigned int u64_compare_masked_data_to_value(const void *data,
 
 ptrdiff_t parser_get_data_length(struct parser *p);
 
+
+// new packet metadata catpure
+
+#define L_ExtensionType            2
+#define L_ExtensionLength          2
+
+/*
+ * extension types used in normalization
+ */
+#define type_sni                0x0000
+#define type_supported_groups   0x000a
+#define type_supported_versions 0x002b
+
+#define SNI_HDR_LEN 9
+
+struct tls_extensions : public parser {
+
+    tls_extensions(const uint8_t *data, const uint8_t *data_end) : parser{data, data_end} {}
+
+    void print(struct json_object &o, const char *key) const;
+
+    void print_server_name(struct json_object &o, const char *key) const;
+};
+
+
+struct tls_client_hello {
+    struct parser protocol_version;
+    struct parser random;
+    struct parser ciphersuite_vector;
+    struct parser session_id;
+    struct parser compression_methods;
+    struct tls_extensions extensions;
+
+    tls_client_hello() : protocol_version{NULL, NULL}, random{NULL, NULL}, ciphersuite_vector{NULL, NULL}, session_id{NULL, NULL}, extensions{NULL, NULL} {}
+    void parse(struct parser &p);
+
+};
+
+struct tls_server_hello {
+    struct parser protocol_version;
+    struct parser random;
+    struct parser ciphersuite_vector;
+    struct parser extensions;
+
+    tls_server_hello() : protocol_version{NULL, NULL}, random{NULL, NULL}, ciphersuite_vector{NULL, NULL}, extensions{NULL, NULL} {}
+
+    void parse(struct parser &p, struct extractor *x);
+
+    enum status parse_tls_server_hello(struct parser &p, struct extractor *x);
+};
+
+struct http_headers : public parser {
+
+    http_headers() : parser{NULL, NULL} {}
+
+    void print_host(struct json_object &o, const char *key) const;
+    void print_matching_name(struct json_object &o, const char *key, struct parser &name) const;
+    void print_matching_names(struct json_object &o, const char *key, std::list<struct parser> &name) const;
+    void print_matching_names(struct json_object &o, std::list<std::pair<struct parser, std::string>> &name_list) const;
+};
+
+struct http_request {
+    struct parser method;
+    struct parser uri;
+    struct parser protocol;
+    struct http_headers headers;
+
+    http_request() : method{NULL, NULL}, uri{NULL, NULL}, protocol{NULL, NULL} {}
+
+    void parse(struct parser &p);
+
+};
 
 #endif /* EXTRACTOR_H */

@@ -41,8 +41,9 @@ unsigned int u64_compare_masked_data_to_value(const void *data,
     const uint64_t *v = (const uint64_t *)value;
 
     extractor_debug("%s: data: %lx, mask: %lx, value: %lx\n", __func__, d[0], m[0], v[0]);
+    // fprintf(stderr, "%s: data: %016lx, mask: %016lx, value: %016lx\n", __func__, d[0], m[0], v[0]);
 
-    return ((d[0] & m[0]) == v[0]) && ((d[1] & m[1]) == v[1]);
+    return ((d[0] & m[0]) == v[0]);
 }
 
 
@@ -73,7 +74,7 @@ typedef struct keyword_matcher {
 #define match_all_keywords NULL
 
 enum status keyword_matcher_check(const keyword_matcher_t *keywords,
-                                  unsigned char *string,
+                                  const unsigned char *string,
                                   size_t len) {
     keyword_t *k;
     size_t i;

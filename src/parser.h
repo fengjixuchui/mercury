@@ -24,15 +24,82 @@
 #define extractor_debug(...)  (fprintf(stdout, __VA_ARGS__))
 #endif
 
-#include <iostream>
+inline uint8_t lowercase(uint8_t x) {
+    if (x >= 'A' && x <= 'Z') {
+        return x + ('a' - 'A');
+    }
+    return x;
+}
+
 struct parser {
     const unsigned char *data;          /* data being parsed/copied  */
     const unsigned char *data_end;      /* end of data buffer        */
 
+    //parser() : data{NULL}, data_end{NULL} {}
+    //parser(const unsigned char *d, const unsigned char *e) : data{d}, data_end{e} {}
+    //parser(const unsigned char *d, size_t length) : data{d}, data_end{d+length} {}
     const std::string get_string() const { std::string s((char *)data, (int) (data_end - data)); return s;  }
+    const std::basic_string<uint8_t> get_bytestring() const { std::basic_string<uint8_t> s((uint8_t *)data, (int) (data_end - data)); return s;  }
     bool is_not_null() const { return data == NULL; }
-    bool is_not_empty() const { return data < data_end; }
+    bool is_not_empty() const { return data != NULL && data < data_end; }
     void set_empty() { data = data_end; }
+    void set_null() { data = data_end = NULL; }
+    ssize_t length() const { return data_end - data; }
+    void parse(struct parser &r, size_t num_bytes) {
+        if (r.length() < (ssize_t)num_bytes) {
+            r.set_null();
+        }
+        data = r.data;
+        data_end = r.data + num_bytes;
+        r.data += num_bytes;
+    }
+    void parse_up_to_delim(struct parser &r, uint8_t delim) {
+        data = r.data;
+        while (r.data <= r.data_end) {
+            if (*r.data == delim) { // found delimeter
+                data_end = r.data;
+                return;
+            }
+            r.data++;
+        }
+    }
+    void skip(size_t length) {
+        data += length;
+        if (data > data_end) {
+            data = data_end;
+        }
+    }
+    bool case_insensitive_match(const struct parser r) const {
+        if (length() != r.length()) {
+            return false;
+        } else {
+            const uint8_t *tmp_l = data;
+            const uint8_t *tmp_r = r.data;
+            while (tmp_l < data_end) {
+                if (*tmp_l++ != lowercase(*tmp_r++)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    bool operator==(const parser &p) const {
+        return (length() == p.length()) && memcmp(data, p.data, length()) == 0;
+    }
+    unsigned int bits_in_data() const {                  // for use with (ASN1) integers
+        unsigned int bits = (data_end - data) * 8;
+        const unsigned char *d = data;
+        while (d < data_end) {
+            for (unsigned char c = 0x80; c > 0; c=c>>1) {
+                if (*d & c) {
+                    return bits;
+                }
+                bits--;
+            }
+            d++;
+        }
+        return bits;
+    }
 };
 
 /*

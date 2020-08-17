@@ -8,6 +8,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <getopt.h>
@@ -25,7 +26,12 @@
 #include "license.h"
 #include "version.h"
 
-struct semantic_version mercury_version(2,0,0);
+#ifndef  MERCURY_SEMANTIC_VERSION
+#warning MERCURY_SEMANTIC_VERSION is not defined
+#define  MERCURY_SEMANTIC_VERSION 0,0,0
+#endif
+
+struct semantic_version mercury_version(MERCURY_SEMANTIC_VERSION);
 
 char mercury_help[] =
     "%s INPUT [OUTPUT] [OPTIONS]:\n"
@@ -33,9 +39,9 @@ char mercury_help[] =
     "   [-c or --capture] capture_interface   # capture packets from interface\n"
     "   [-r or --read] read_file              # read packets from file\n"
     "OUTPUT\n"
-    "   [-f or --fingerprint] json_file_name  # write fingerprints to JSON file\n"
+    "   [-f or --fingerprint] json_file_name  # write JSON fingerprints to file\n"
     "   [-w or --write] pcap_file_name        # write packets to PCAP/MCAP file\n"
-    "   no output option                      # write JSON packet summary to stdout\n"
+    "   no output option                      # write JSON fingerprints to stdout\n"
     "--capture OPTIONS\n"
     "   [-b or --buffer] b                    # set RX_RING size to (b * PHYS_MEM)\n"
     "   [-t or --threads] [num_threads | cpu] # set number of threads\n"
@@ -44,9 +50,12 @@ char mercury_help[] =
     "GENERAL OPTIONS\n"
     "   --config c                            # read configuration from file c\n"
     "   [-a or --analysis]                    # analyze fingerprints\n"
-    "   [-s or --select]                      # select only packets with metadata\n"
+    "   [-s or --select] filter               # select only metadata (see --help)\n"
     "   [-l or --limit] l                     # rotate output file after l records\n"
-    "   [-v or --verbose]                     # additional information sent to stdout\n"
+    "   --dns-json                            # output DNS as JSON, not base64\n"
+    "   --certs-json                          # output certs as JSON, not base64\n"
+    "   --metadata                            # output more protocol metadata in JSON\n"
+    "   [-v or --verbose]                     # additional information sent to stderr\n"
     "   --license                             # write license information to stdout\n"
     "   --version                             # write version information to stdout\n"
     "   [-h or --help]                        # extended help, with examples\n";
@@ -70,9 +79,23 @@ char mercury_extended_help[] =
     "\n"
     "   \"[-w or --write] w\" writes packets to the file w, in PCAP format.  With the\n"
     "   option [-s or --select], packets are filtered so that only ones with\n"
-    "   fingerprint  metadata are written.\n"
+    "   fingerprint metadata are written.\n"
     "\n"
     "   \"[r or --read] r\" reads packets from the file r, in PCAP format.\n"
+    "\n"
+    "   \"[-s or --select] f\" selects packets according to the metadata filter f, which\n"
+    "   is a comma-separated list of the following strings:\n"
+    "      dhcp          DHCP discover message\n"
+    "      dns           DNS response\n"
+    "      tls           DTLS clientHello, serverHello, and certificates\n"
+    "      http          HTTP request and response\n"
+    "      ssh           SSH handshake and KEX\n"
+    "      tcp           TCP headers\n"
+    "      tcp.message   TCP initial message\n"
+    "      tls           TLS clientHello, serverHello, and certificates\n"
+    "      wireguard     WG handshake initiation message\n"
+    "      all           all of the above\n"
+    "      <no option>   all of the above\n"
     "\n"
     "   \"[-u or --user] u\" sets the UID and GID to those of user u, so that\n"
     "   output file(s) are owned by this user.  If this option is not set, then\n"
@@ -82,7 +105,7 @@ char mercury_extended_help[] =
     "\n"
     "   \"[-d or --directory] d\" sets the working directory to d, so that all output\n"
     "   files are written into that location.  When capturing at a high data rate, a\n"
-    "   a high performance filesystem and disk should be used, and NFS partitions\n"
+    "   high performance filesystem and disk should be used, and NFS partitions\n"
     "   should be avoided.\n"
     "\n"
     "   \"--config c\" reads configuration information from the file c.\n"
@@ -94,7 +117,15 @@ char mercury_extended_help[] =
     "   \"[-l or --limit] l\" rotates output files so that each file has at most\n"
     "   l records or packets; filenames include a sequence number, date and time.\n"
     "\n"
-    "   [-v or --verbose] writes additional information to the standard output,\n"
+    "   --dns-json writes out DNS responses as a JSON object; otherwise,\n"
+    "   that data is output in base64 format, as a string with the key \"base64\".\n"
+    "\n"
+    "   --certs-json writes out certificates as JSON objects; otherwise,\n"
+   "    that data is output in base64 format, as a string with the key \"base64\".\n"
+    "\n"
+    "   --metadata writes out additional metadata into the protocol JSON objects.\n"
+    "\n"
+    "   [-v or --verbose] writes additional information to the standard error,\n"
     "   including the packet count, byte count, elapsed time and processing rate, as\n"
     "   well as information about threads and files.\n"
     "\n"
@@ -142,17 +173,23 @@ bool option_is_valid(const char *opt) {
     return true;
 }
 
+bool dns_json_output   = false;  /* output DNS as JSON              */
+bool certs_json_output = false;  /* output certificates as JSON     */
+bool metadata_output   = false;  /* output lots of metadata         */
+
 int main(int argc, char *argv[]) {
     struct mercury_config cfg = mercury_config_init();
-    int c;
 
     while(1) {
-        enum opt { config=1, version=2, license=3 };
+        enum opt { config=1, version=2, license=3, dns_json=4, certs_json=5, metadata=6 };
         int opt_idx = 0;
         static struct option long_opts[] = {
             { "config",      required_argument, NULL, config  },
             { "version",     no_argument,       NULL, version },
             { "license",     no_argument,       NULL, license },
+            { "dns-json",    no_argument,       NULL, dns_json },
+            { "certs-json",  no_argument,       NULL, certs_json },
+            { "metadata",    no_argument,       NULL, metadata },
             { "read",        required_argument, NULL, 'r' },
             { "write",       required_argument, NULL, 'w' },
             { "directory",   required_argument, NULL, 'd' },
@@ -168,7 +205,7 @@ int main(int argc, char *argv[]) {
             { "verbose",     no_argument,       NULL, 'v' },
             { NULL,          0,                 0,     0  }
         };
-        c = getopt_long(argc, argv, "r:w:c:f:t:b:l:u:soham:vp:d:", long_opts, &opt_idx);
+        int c = getopt_long(argc, argv, "r:w:c:f:t:b:l:u:s::oham:vp:d:", long_opts, &opt_idx);
         if (c < 0) {
             break;
         }
@@ -187,6 +224,27 @@ int main(int argc, char *argv[]) {
         case license:
             printf("%s\n", license_string);
             return EXIT_SUCCESS;
+            break;
+        case dns_json:
+            if (optarg) {
+                usage(argv[0], "option dns-json does not use an argument", extended_help_off);
+            } else {
+                dns_json_output = true;
+            }
+            break;
+        case certs_json:
+            if (optarg) {
+                usage(argv[0], "option certs-json does not use an argument", extended_help_off);
+            } else {
+                certs_json_output = true;
+            }
+            break;
+        case metadata:
+            if (optarg) {
+                usage(argv[0], "option metadata does not use an argument", extended_help_off);
+            } else {
+                metadata_output = true;
+            }
             break;
         case 'r':
             if (option_is_valid(optarg)) {
@@ -218,13 +276,9 @@ int main(int argc, char *argv[]) {
             break;
         case 'f':
             if (option_is_valid(optarg)) {
-                if (strcmp("stdout", optarg) == 0) {
-                    cfg.fingerprint_filename = stdout_string();
-                } else {
-                    cfg.fingerprint_filename = optarg;
-                }
+                cfg.fingerprint_filename = optarg;
             } else {
-                usage(argv[0], "option f or fingerprint requires filename argument or 'stdout'", extended_help_off);
+                usage(argv[0], "option f or fingerprint requires filename argument", extended_help_off);
             }
             break;
         case 'a':
@@ -249,11 +303,15 @@ int main(int argc, char *argv[]) {
             }
             break;
         case 's':
-            if (option_is_valid(optarg)) {
-                if (optarg[0] != '=' || optarg[1] == 0) {
-                    usage(argv[0], "option s or select has the form s=\"packet filter config string\"", extended_help_off);
+            if (optarg) {
+                if (cfg.packet_filter_cfg != NULL) {
+                    usage(argv[0], "option s or select used more than once", extended_help_off);
                 }
-                cfg.packet_filter_cfg = optarg+1;
+                if (option_is_valid(optarg)) {
+                    cfg.packet_filter_cfg = optarg;
+                } else {
+                    usage(argv[0], "option s or select has the form -s\"filter\" or --select=\"filter\"", extended_help_off);
+                }
             }
             cfg.filter = 1;
             break;
@@ -280,8 +338,9 @@ int main(int argc, char *argv[]) {
                 }
                 errno = 0;
                 cfg.num_threads = strtol(optarg, NULL, 10);
-                if (errno) {
-                    printf("%s: could not convert argument \"%s\" to a number\n", strerror(errno), optarg);
+                if (cfg.num_threads == 0 || errno) {
+                    printf("error: could not convert argument \"%s\" to a non-negative number\n", optarg);
+                    usage(argv[0], "option t or threads requires a numeric argument", extended_help_off);
                 }
             } else {
                 usage(argv[0], "option t or threads requires a numeric argument", extended_help_off);
@@ -369,9 +428,6 @@ int main(int argc, char *argv[]) {
     }
     if (cfg.fingerprint_filename && cfg.write_filename) {
         usage(argv[0], "both fingerprint [f] and write [w] specified on command line", extended_help_off);
-    }
-    if (cfg.num_threads != 1 && cfg.fingerprint_filename == NULL && cfg.write_filename == NULL) {
-        usage(argv[0], "multiple threads [t] requested, but neither fingerprint [f] no write [w] specified on command line", extended_help_off);
     }
 
     if (cfg.analysis) {
